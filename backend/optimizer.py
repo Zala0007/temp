@@ -422,20 +422,18 @@ class ClinkerOptimizer:
         # ==================== OPTIMIZED DECISION VARIABLES ====================
         # Goal: MINIMIZE total cost while satisfying demand and inventory constraints
         
-        # X[i,j,m,t] - OPTIMAL Shipment: Ship exactly what destination needs to meet demand + safety stock
-        # Minimize shipment to reduce transport cost
+        # X[i,j,m,t] - Shipment: What destination needs to meet demand + safety stock
         dest_shortfall = d_demand + d_close_min - d_open  # What destination needs
-        optimal_shipment = max(0, dest_shortfall)  # Ship only if needed
+        required_shipment = max(0, dest_shortfall)
         
         # T[i,j,m,t] - Number of trips (integer) - ceiling for vehicle constraint
-        if vehicle_capacity > 0 and optimal_shipment > 0:
-            num_trips = math.ceil(optimal_shipment / vehicle_capacity)
+        if vehicle_capacity > 0 and required_shipment > 0:
+            num_trips = math.ceil(required_shipment / vehicle_capacity)
+            # Actual shipment rounded UP to vehicle capacity (can't send partial vehicles)
+            shipment_qty = num_trips * vehicle_capacity
         else:
             num_trips = 0
-        
-        # Actual shipment = exactly what's needed (not rounded to vehicle capacity)
-        # This minimizes transport cost
-        shipment_qty = optimal_shipment
+            shipment_qty = 0
         
         # P[i,t] - OPTIMAL Production: Produce only what's needed to maintain source inventory
         is_iu = route.source_type == 'IU'
@@ -453,6 +451,9 @@ class ClinkerOptimizer:
         source_ending_inv = s_open + production - shipment_qty - s_demand
         dest_ending_inv = d_open + shipment_qty - d_demand
         
+        # Extra inventory at destination due to rounding up
+        excess_at_dest = shipment_qty - required_shipment
+        
         decision_variables = {
             'P_i_t': {
                 'value': round(production, 2),
@@ -464,7 +465,9 @@ class ClinkerOptimizer:
                 'value': round(shipment_qty, 2),
                 'description': f'Shipment from {source} to {dest} via {mode} in period {period}',
                 'unit': 'tons',
-                'formula': f'max(0, Demand({d_demand:.0f}) + SafetyStock({d_close_min:.0f}) - Opening({d_open:.0f})) = {optimal_shipment:.0f}',
+                'formula': f'ceil({required_shipment:.0f} / {vehicle_capacity}) × {vehicle_capacity} = {num_trips} × {vehicle_capacity} = {shipment_qty:.0f}',
+                'required': round(required_shipment, 2),
+                'excess': round(excess_at_dest, 2),
             },
             'I_source_t': {
                 'value': round(source_ending_inv, 2),
@@ -480,7 +483,8 @@ class ClinkerOptimizer:
                 'value': num_trips,
                 'description': f'Number of trips from {source} to {dest} via {mode}',
                 'unit': 'trips',
-                'formula': f'ceil({optimal_shipment:.0f} / {vehicle_capacity}) = {num_trips}',
+                'formula': f'ceil({required_shipment:.0f} / {vehicle_capacity}) = {num_trips}',
+                'vehicle_capacity': vehicle_capacity,
             }
         }
         
