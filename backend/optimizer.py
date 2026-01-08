@@ -419,27 +419,37 @@ class ClinkerOptimizer:
         # Get vehicle capacity
         vehicle_capacity = TRANSPORT_MODES.get(mode, {'capacity': 30})['capacity']
         
-        # ==================== DECISION VARIABLES ====================
-        # X[i,j,m,t] - Shipment quantity (to cover demand + safety stock)
-        required_shipment = max(0, d_demand + d_close_min - d_open)
+        # ==================== OPTIMIZED DECISION VARIABLES ====================
+        # Goal: MINIMIZE total cost while satisfying demand and inventory constraints
         
-        # T[i,j,m,t] - Number of trips (integer)
-        if vehicle_capacity > 0:
-            num_trips = math.ceil(required_shipment / vehicle_capacity)
-            shipment_qty = num_trips * vehicle_capacity if multiplier > 1 else required_shipment
+        # X[i,j,m,t] - OPTIMAL Shipment: Ship exactly what destination needs to meet demand + safety stock
+        # Minimize shipment to reduce transport cost
+        dest_shortfall = d_demand + d_close_min - d_open  # What destination needs
+        optimal_shipment = max(0, dest_shortfall)  # Ship only if needed
+        
+        # T[i,j,m,t] - Number of trips (integer) - ceiling for vehicle constraint
+        if vehicle_capacity > 0 and optimal_shipment > 0:
+            num_trips = math.ceil(optimal_shipment / vehicle_capacity)
         else:
             num_trips = 0
-            shipment_qty = 0
         
-        # P[i,t] - Production at source (only if IU)
+        # Actual shipment = exactly what's needed (not rounded to vehicle capacity)
+        # This minimizes transport cost
+        shipment_qty = optimal_shipment
+        
+        # P[i,t] - OPTIMAL Production: Produce only what's needed to maintain source inventory
         is_iu = route.source_type == 'IU'
         if is_iu:
-            production_needed = max(0, shipment_qty + s_demand + s_close_min - s_open)
-            production = min(production_needed, capacity) if capacity > 0 else 0
+            # Source needs: shipment + own demand + safety stock - opening
+            source_shortfall = shipment_qty + s_demand + s_close_min - s_open
+            optimal_production = max(0, source_shortfall)  # Produce only if needed
+            production = min(optimal_production, capacity) if capacity > 0 else 0
         else:
+            optimal_production = 0
             production = 0
         
         # I[i,t] - Ending inventories (Mass Balance)
+        # I[i,t] = I[i,t-1] + P[i,t] - X[i,j,m,t] - D[i,t]
         source_ending_inv = s_open + production - shipment_qty - s_demand
         dest_ending_inv = d_open + shipment_qty - d_demand
         
@@ -448,13 +458,13 @@ class ClinkerOptimizer:
                 'value': round(production, 2),
                 'description': f'Production at {source} in period {period}',
                 'unit': 'tons',
-                'formula': f'min(Needed: {production_needed:.0f}, Capacity: {capacity:.0f})' if is_iu else 'N/A (GU)',
+                'formula': f'min(Needed: {optimal_production:.0f}, Capacity: {capacity:.0f})' if is_iu else 'N/A (GU)',
             },
             'X_i_j_m_t': {
                 'value': round(shipment_qty, 2),
                 'description': f'Shipment from {source} to {dest} via {mode} in period {period}',
                 'unit': 'tons',
-                'formula': f'Demand({d_demand:.0f}) + SafetyStock({d_close_min:.0f}) - Opening({d_open:.0f}) = {required_shipment:.0f}',
+                'formula': f'max(0, Demand({d_demand:.0f}) + SafetyStock({d_close_min:.0f}) - Opening({d_open:.0f})) = {optimal_shipment:.0f}',
             },
             'I_source_t': {
                 'value': round(source_ending_inv, 2),
@@ -470,7 +480,7 @@ class ClinkerOptimizer:
                 'value': num_trips,
                 'description': f'Number of trips from {source} to {dest} via {mode}',
                 'unit': 'trips',
-                'formula': f'ceil({required_shipment:.0f} / {vehicle_capacity}) = {num_trips}',
+                'formula': f'ceil({optimal_shipment:.0f} / {vehicle_capacity}) = {num_trips}',
             }
         }
         
@@ -482,8 +492,11 @@ class ClinkerOptimizer:
         handling_total = handling * shipment_qty
         transport_cost_comp = freight_total + handling_total
         
+        # Holding cost: Calculate SEPARATELY for source and destination
         holding_rate = prod_cost * HOLDING_COST_RATE if prod_cost > 0 else 0
-        holding_cost_comp = holding_rate * (max(0, source_ending_inv) + max(0, dest_ending_inv))
+        source_holding = holding_rate * max(0, source_ending_inv)
+        dest_holding = holding_rate * max(0, dest_ending_inv)
+        holding_cost_comp = source_holding + dest_holding
         
         total_Z = production_cost_comp + transport_cost_comp + holding_cost_comp
         
@@ -505,9 +518,19 @@ class ClinkerOptimizer:
                 'rate_per_ton': round(freight + handling, 2),
             },
             'holding_cost': {
-                'formula': 'C_hold × (I_source + I_dest)',
+                'formula': 'Σ(C_hold × I) = C_hold × I_source + C_hold × I_dest',
                 'rate': round(holding_rate, 4),
-                'calculation': f'{holding_rate:.4f} × ({max(0, source_ending_inv):.0f} + {max(0, dest_ending_inv):.0f}) = {holding_cost_comp:.2f}',
+                'source': {
+                    'inventory': round(max(0, source_ending_inv), 2),
+                    'cost': round(source_holding, 2),
+                    'calculation': f'{holding_rate:.4f} × {max(0, source_ending_inv):.0f} = {source_holding:.2f}'
+                },
+                'destination': {
+                    'inventory': round(max(0, dest_ending_inv), 2),
+                    'cost': round(dest_holding, 2),
+                    'calculation': f'{holding_rate:.4f} × {max(0, dest_ending_inv):.0f} = {dest_holding:.2f}'
+                },
+                'calculation': f'{source_holding:.2f} + {dest_holding:.2f} = {holding_cost_comp:.2f}',
                 'value': round(holding_cost_comp, 2),
             },
             'total_Z': round(total_Z, 2),

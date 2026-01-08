@@ -913,6 +913,10 @@ export default function Home() {
                     <p className="data-label text-purple-600">Holding Cost</p>
                     <p className="text-2xl font-bold text-purple-700">₹{routeData.objective_function.holding_cost?.value?.toLocaleString() || 0}</p>
                     <p className="text-xs text-slate-500 mt-2 font-mono">{routeData.objective_function.holding_cost?.calculation}</p>
+                    <div className="mt-2 text-xs text-slate-400">
+                      <p>Source: ₹{routeData.objective_function.holding_cost?.source?.cost?.toLocaleString() || 0} ({routeData.objective_function.holding_cost?.source?.inventory?.toLocaleString() || 0} tons)</p>
+                      <p>Dest: ₹{routeData.objective_function.holding_cost?.destination?.cost?.toLocaleString() || 0} ({routeData.objective_function.holding_cost?.destination?.inventory?.toLocaleString() || 0} tons)</p>
+                    </div>
                   </div>
                 </div>
                 {/* Total Z */}
