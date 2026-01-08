@@ -287,8 +287,8 @@ class ClinkerOptimizer:
         source_num = NOT_AVAILABLE
         dest_num = NOT_AVAILABLE
         
-        if 'PlantType' in self.data:
-            df = self.data['PlantType']
+        if 'IUGUType' in self.data:
+            df = self.data['IUGUType']
             mask = df['IUGU CODE'] == source
             source_type = self._get_value(df, mask, 'PLANT TYPE')
             source_num = self._get_value(df, mask, '# Source')
@@ -494,6 +494,7 @@ class ClinkerOptimizer:
                 'formula': f'C_prod[{source},{period}] × P[{source},{period}]',
                 'calculation': f'{prod_cost:.2f} × {production:.0f} = {production_cost_comp:.2f}',
                 'value': round(production_cost_comp, 2),
+                'rate': prod_cost,
             },
             'transport_cost': {
                 'formula': f'(C_fr + C_hand) × X[{source},{dest},{mode},{period}]',
@@ -501,6 +502,7 @@ class ClinkerOptimizer:
                 'handling': {'rate': handling, 'total': round(handling_total, 2)},
                 'calculation': f'({freight:.2f} + {handling:.2f}) × {shipment_qty:.0f} = {transport_cost_comp:.2f}',
                 'value': round(transport_cost_comp, 2),
+                'rate_per_ton': round(freight + handling, 2),
             },
             'holding_cost': {
                 'formula': 'C_hold × (I_source + I_dest)',
@@ -510,6 +512,11 @@ class ClinkerOptimizer:
             },
             'total_Z': round(total_Z, 2),
             'cost_per_ton': round(total_Z / shipment_qty, 2) if shipment_qty > 0 else 0,
+            'unit_costs': {
+                'production_per_ton': prod_cost,
+                'transport_per_ton': round(freight + handling, 2),
+                'total_delivered_per_ton': round(prod_cost + freight + handling, 2),
+            }
         }
         
         # ==================== MASS BALANCE EQUATION ====================

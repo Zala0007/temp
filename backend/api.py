@@ -324,12 +324,12 @@ def get_route_data():
             'data': None
         }), 400
     
-    # Use optimizer to calculate route insights
-    route_insight = optimizer.calculate_route_insights(source, destination, mode, period)
+    # Use optimizer to calculate MILP solution
+    route_data = optimizer.get_all_data_for_route(source, destination, mode, period)
     
     return jsonify({
         'success': True,
-        **route_insight.to_dict(),
+        **route_data,
         'note': 'All values derived exclusively from uploaded dataset'
     })
 
