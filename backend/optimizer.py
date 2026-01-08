@@ -489,24 +489,37 @@ class ClinkerOptimizer:
         }
         
         # ==================== OBJECTIVE FUNCTION ====================
-        # Z = Σ C_prod × P + Σ (C_fr + C_hand) × X + Σ C_hold × I
+        # Z = Σ C_prod × P + Σ (C_fr + C_hand) × X + Σ C_hold × max(I - SafetyStock, 0)
         
         production_cost_comp = prod_cost * production
         freight_total = freight * shipment_qty
         handling_total = handling * shipment_qty
         transport_cost_comp = freight_total + handling_total
         
-        # Holding cost: Calculate SEPARATELY for source and destination
+        # Holding cost: ONLY on inventory ABOVE safety stock
+        # HoldingCost = h × max(I[i,t] - SafetyStock[i], 0)
         holding_rate = prod_cost * HOLDING_COST_RATE if prod_cost > 0 else 0
-        source_holding = holding_rate * max(0, source_ending_inv)
-        dest_holding = holding_rate * max(0, dest_ending_inv)
+        
+        # Source: excess above safety stock (s_close_min is safety stock)
+        source_excess_inv = max(0, source_ending_inv - s_close_min)
+        source_holding = holding_rate * source_excess_inv
+        
+        # Destination: excess above safety stock (d_close_min is safety stock)
+        dest_excess_inv = max(0, dest_ending_inv - d_close_min)
+        dest_holding = holding_rate * dest_excess_inv
+        
         holding_cost_comp = source_holding + dest_holding
         
         total_Z = production_cost_comp + transport_cost_comp + holding_cost_comp
         
+        # Cost per ton = total_Z / (Σ fulfilled external demand)
+        # External demand = destination demand (what we're fulfilling)
+        fulfilled_demand = d_demand  # Destination demand fulfilled
+        cost_per_ton_demand = round(total_Z / fulfilled_demand, 2) if fulfilled_demand > 0 else 0
+        
         objective_function = {
             'type': 'Minimize',
-            'formula': 'Z = Σ(C_prod × P) + Σ(C_fr + C_hand) × X + Σ(C_hold × I)',
+            'formula': 'Z = Σ(C_prod × P) + Σ(C_fr + C_hand) × X + Σ(C_hold × max(I - SafetyStock, 0))',
             'production_cost': {
                 'formula': f'C_prod[{source},{period}] × P[{source},{period}]',
                 'calculation': f'{prod_cost:.2f} × {production:.0f} = {production_cost_comp:.2f}',
@@ -522,23 +535,29 @@ class ClinkerOptimizer:
                 'rate_per_ton': round(freight + handling, 2),
             },
             'holding_cost': {
-                'formula': 'Σ(C_hold × I) = C_hold × I_source + C_hold × I_dest',
+                'formula': 'h × max(I[i,t] - SafetyStock[i], 0)',
                 'rate': round(holding_rate, 4),
                 'source': {
-                    'inventory': round(max(0, source_ending_inv), 2),
+                    'ending_inventory': round(source_ending_inv, 2),
+                    'safety_stock': round(s_close_min, 2),
+                    'excess_inventory': round(source_excess_inv, 2),
                     'cost': round(source_holding, 2),
-                    'calculation': f'{holding_rate:.4f} × {max(0, source_ending_inv):.0f} = {source_holding:.2f}'
+                    'calculation': f'{holding_rate:.4f} × max({source_ending_inv:.0f} - {s_close_min:.0f}, 0) = {holding_rate:.4f} × {source_excess_inv:.0f} = {source_holding:.2f}'
                 },
                 'destination': {
-                    'inventory': round(max(0, dest_ending_inv), 2),
+                    'ending_inventory': round(dest_ending_inv, 2),
+                    'safety_stock': round(d_close_min, 2),
+                    'excess_inventory': round(dest_excess_inv, 2),
                     'cost': round(dest_holding, 2),
-                    'calculation': f'{holding_rate:.4f} × {max(0, dest_ending_inv):.0f} = {dest_holding:.2f}'
+                    'calculation': f'{holding_rate:.4f} × max({dest_ending_inv:.0f} - {d_close_min:.0f}, 0) = {holding_rate:.4f} × {dest_excess_inv:.0f} = {dest_holding:.2f}'
                 },
                 'calculation': f'{source_holding:.2f} + {dest_holding:.2f} = {holding_cost_comp:.2f}',
                 'value': round(holding_cost_comp, 2),
             },
             'total_Z': round(total_Z, 2),
-            'cost_per_ton': round(total_Z / shipment_qty, 2) if shipment_qty > 0 else 0,
+            'fulfilled_demand': round(fulfilled_demand, 2),
+            'cost_per_ton': cost_per_ton_demand,
+            'cost_per_ton_note': 'Total Z ÷ Fulfilled External Demand',
             'unit_costs': {
                 'production_per_ton': prod_cost,
                 'transport_per_ton': round(freight + handling, 2),

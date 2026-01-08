@@ -912,10 +912,10 @@ export default function Home() {
                   <div className="p-4 bg-white rounded-xl">
                     <p className="data-label text-purple-600">Holding Cost</p>
                     <p className="text-2xl font-bold text-purple-700">₹{routeData.objective_function.holding_cost?.value?.toLocaleString() || 0}</p>
-                    <p className="text-xs text-slate-500 mt-2 font-mono">{routeData.objective_function.holding_cost?.calculation}</p>
+                    <p className="text-xs text-slate-500 mt-2 font-mono">{routeData.objective_function.holding_cost?.formula}</p>
                     <div className="mt-2 text-xs text-slate-400">
-                      <p>Source: ₹{routeData.objective_function.holding_cost?.source?.cost?.toLocaleString() || 0} ({routeData.objective_function.holding_cost?.source?.inventory?.toLocaleString() || 0} tons)</p>
-                      <p>Dest: ₹{routeData.objective_function.holding_cost?.destination?.cost?.toLocaleString() || 0} ({routeData.objective_function.holding_cost?.destination?.inventory?.toLocaleString() || 0} tons)</p>
+                      <p>Source: ₹{routeData.objective_function.holding_cost?.source?.cost?.toLocaleString() || 0} (excess: {routeData.objective_function.holding_cost?.source?.excess_inventory?.toLocaleString() || 0} tons)</p>
+                      <p>Dest: ₹{routeData.objective_function.holding_cost?.destination?.cost?.toLocaleString() || 0} (excess: {routeData.objective_function.holding_cost?.destination?.excess_inventory?.toLocaleString() || 0} tons)</p>
                     </div>
                   </div>
                 </div>
@@ -927,8 +927,9 @@ export default function Home() {
                       <p className="text-3xl font-bold text-green-900">₹{routeData.objective_function.total_Z?.toLocaleString() || 0}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm text-green-700">Cost per ton delivered</p>
+                      <p className="text-sm text-green-700">Cost per ton (Z / Fulfilled Demand)</p>
                       <p className="text-xl font-bold text-green-800">₹{routeData.objective_function.cost_per_ton?.toLocaleString() || 0}/ton</p>
+                      <p className="text-xs text-green-600">Demand: {routeData.objective_function.fulfilled_demand?.toLocaleString() || 0} tons</p>
                     </div>
                   </div>
                 </div>
