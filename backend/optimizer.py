@@ -419,65 +419,89 @@ class ClinkerOptimizer:
         # Get vehicle capacity
         vehicle_capacity = TRANSPORT_MODES.get(mode, {'capacity': 30})['capacity']
         
-        # ==================== OPTIMIZED DECISION VARIABLES ====================
-        # Goal: MINIMIZE total cost while satisfying demand and inventory constraints
+        # ==================== MILP COST MINIMIZATION ====================
+        # Objective: min Z = C_prod × P + C_transport × T + C_hold × excess_inv
+        # Subject to: Mass Balance, Capacity, Safety Stock constraints
         
-        # X[i,j,m,t] - Shipment: What destination needs to meet demand + safety stock
-        dest_shortfall = d_demand + d_close_min - d_open  # What destination needs
-        required_shipment = max(0, dest_shortfall)
+        # ===== STEP 1: Calculate MINIMUM shipment to satisfy destination =====
+        # Constraint: I_dest[t] ≥ SS_dest (safety stock)
+        # I_dest[t] = I_dest[t-1] + X - D_dest ≥ SS_dest
+        # X ≥ SS_dest + D_dest - I_dest[t-1]
+        min_shipment_needed = d_close_min + d_demand - d_open
+        required_shipment = max(0, min_shipment_needed)  # Can't ship negative
         
-        # T[i,j,m,t] - Number of trips (integer) - ceiling for vehicle constraint
+        # ===== STEP 2: Round up to vehicle capacity (integer constraint) =====
+        # T ∈ Z+ (integer trips), X = T × VehicleCapacity
         if vehicle_capacity > 0 and required_shipment > 0:
             num_trips = math.ceil(required_shipment / vehicle_capacity)
-            # Actual shipment rounded UP to vehicle capacity (can't send partial vehicles)
             shipment_qty = num_trips * vehicle_capacity
         else:
             num_trips = 0
             shipment_qty = 0
         
-        # P[i,t] - OPTIMAL Production: Produce only what's needed to maintain source inventory
+        # ===== STEP 3: Calculate MINIMUM production to satisfy source =====
+        # Constraint: I_source[t] ≥ SS_source (safety stock)
+        # I_source[t] = I_source[t-1] + P - X - D_source ≥ SS_source
+        # P ≥ SS_source + X + D_source - I_source[t-1]
         is_iu = route.source_type == 'IU'
         if is_iu:
-            # Source needs: shipment + own demand + safety stock - opening
-            source_shortfall = shipment_qty + s_demand + s_close_min - s_open
-            optimal_production = max(0, source_shortfall)  # Produce only if needed
-            production = min(optimal_production, capacity) if capacity > 0 else 0
+            min_production_needed = s_close_min + shipment_qty + s_demand - s_open
+            required_production = max(0, min_production_needed)  # Can't produce negative
+            
+            # Check feasibility: Can we produce enough?
+            if required_production > capacity and capacity > 0:
+                production = capacity  # Cap at capacity (INFEASIBLE)
+                capacity_violation = required_production - capacity
+            else:
+                production = required_production  # Produce exactly what's needed (OPTIMAL)
+                capacity_violation = 0
         else:
-            optimal_production = 0
+            required_production = 0
             production = 0
+            capacity_violation = 0
         
-        # I[i,t] - Ending inventories (Mass Balance)
-        # I[i,t] = I[i,t-1] + P[i,t] - X[i,j,m,t] - D[i,t]
+        # ===== STEP 4: Calculate ending inventories (Mass Balance) =====
+        # I[i,t] = I[i,t-1] + P[i,t] - X_out - D[i,t]
         source_ending_inv = s_open + production - shipment_qty - s_demand
         dest_ending_inv = d_open + shipment_qty - d_demand
         
-        # Extra inventory at destination due to rounding up
+        # Excess inventory due to vehicle rounding
         excess_at_dest = shipment_qty - required_shipment
+        
+        # ===== STEP 5: Check constraint satisfaction =====
+        source_ss_satisfied = source_ending_inv >= s_close_min - 0.01  # tolerance
+        dest_ss_satisfied = dest_ending_inv >= d_close_min - 0.01  # tolerance
+        is_feasible = source_ss_satisfied and dest_ss_satisfied and capacity_violation == 0
         
         decision_variables = {
             'P_i_t': {
                 'value': round(production, 2),
                 'description': f'Production at {source} in period {period}',
                 'unit': 'tons',
-                'formula': f'min(Needed: {optimal_production:.0f}, Capacity: {capacity:.0f})' if is_iu else 'N/A (GU)',
+                'minimum_required': round(required_production, 2) if is_iu else 0,
+                'formula': f'max(0, SS_src + X + D_src - I_open) = max(0, {s_close_min:.0f} + {shipment_qty:.0f} + {s_demand:.0f} - {s_open:.0f}) = {required_production:.0f}' if is_iu else 'N/A (GU)',
             },
             'X_i_j_m_t': {
                 'value': round(shipment_qty, 2),
                 'description': f'Shipment from {source} to {dest} via {mode} in period {period}',
                 'unit': 'tons',
-                'formula': f'ceil({required_shipment:.0f} / {vehicle_capacity}) × {vehicle_capacity} = {num_trips} × {vehicle_capacity} = {shipment_qty:.0f}',
-                'required': round(required_shipment, 2),
+                'minimum_required': round(required_shipment, 2),
+                'formula': f'T × VehicleCap = {num_trips} × {vehicle_capacity} = {shipment_qty:.0f}',
                 'excess': round(excess_at_dest, 2),
             },
             'I_source_t': {
                 'value': round(source_ending_inv, 2),
                 'description': f'Ending inventory at {source}',
                 'unit': 'tons',
+                'safety_stock': round(s_close_min, 2),
+                'constraint_satisfied': source_ss_satisfied,
             },
             'I_dest_t': {
                 'value': round(dest_ending_inv, 2),
                 'description': f'Ending inventory at {dest}',
                 'unit': 'tons',
+                'safety_stock': round(d_close_min, 2),
+                'constraint_satisfied': dest_ss_satisfied,
             },
             'T_i_j_m_t': {
                 'value': num_trips,
@@ -489,7 +513,7 @@ class ClinkerOptimizer:
         }
         
         # ==================== OBJECTIVE FUNCTION ====================
-        # Z = Σ C_prod × P + Σ (C_fr + C_hand) × X + Σ C_hold × max(I - SafetyStock, 0)
+        # Z = C_prod × P + (C_freight + C_handling) × X + C_hold × excess_inv
         
         production_cost_comp = prod_cost * production
         freight_total = freight * shipment_qty
@@ -500,11 +524,9 @@ class ClinkerOptimizer:
         # HoldingCost = h × max(I[i,t] - SafetyStock[i], 0)
         holding_rate = prod_cost * HOLDING_COST_RATE if prod_cost > 0 else 0
         
-        # Source: excess above safety stock (s_close_min is safety stock)
         source_excess_inv = max(0, source_ending_inv - s_close_min)
         source_holding = holding_rate * source_excess_inv
         
-        # Destination: excess above safety stock (d_close_min is safety stock)
         dest_excess_inv = max(0, dest_ending_inv - d_close_min)
         dest_holding = holding_rate * dest_excess_inv
         
@@ -512,9 +534,8 @@ class ClinkerOptimizer:
         
         total_Z = production_cost_comp + transport_cost_comp + holding_cost_comp
         
-        # Cost per ton = total_Z / (Σ fulfilled external demand)
-        # External demand = destination demand (what we're fulfilling)
-        fulfilled_demand = d_demand  # Destination demand fulfilled
+        # Cost per ton = Z / fulfilled demand (destination demand)
+        fulfilled_demand = d_demand
         cost_per_ton_demand = round(total_Z / fulfilled_demand, 2) if fulfilled_demand > 0 else 0
         
         objective_function = {
@@ -648,15 +669,16 @@ class ClinkerOptimizer:
         
         # ==================== FEASIBILITY ====================
         issues = []
-        if production > capacity and capacity > 0:
-            issues.append(f'Production {production:.0f} exceeds capacity {capacity:.0f}')
-        if source_ending_inv < s_close_min:
+        if capacity_violation > 0:
+            issues.append(f'Production required {required_production:.0f} exceeds capacity {capacity:.0f} by {capacity_violation:.0f} tons')
+        if not source_ss_satisfied:
             issues.append(f'Source inventory {source_ending_inv:.0f} below safety stock {s_close_min:.0f}')
-        if dest_ending_inv < d_close_min:
+        if not dest_ss_satisfied:
             issues.append(f'Destination inventory {dest_ending_inv:.0f} below safety stock {d_close_min:.0f}')
         
         feasibility = {
-            'is_feasible': len(issues) == 0,
+            'is_feasible': is_feasible,
+            'capacity_violation': round(capacity_violation, 2) if capacity_violation > 0 else 0,
             'issues': issues
         }
         
